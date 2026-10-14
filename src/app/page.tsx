@@ -21,15 +21,32 @@ import {
   Trash2,
   Info,
   Sliders,
-  ExternalLink,
+  Send,
+  MessageSquare,
+  FileText,
+  ShieldCheck,
+  Zap,
 } from 'lucide-react';
-import { calculateContributionEconomics, DEFAULT_LOW_MARGIN_THRESHOLD_PERCENT } from '../lib/economics';
+import {
+  calculateContributionEconomics,
+  evaluateFeasibilityRules,
+  DEFAULT_LOW_MARGIN_THRESHOLD_PERCENT,
+} from '../lib/economics';
 import { generateInitialChecklist, recalculateChecklistTimes } from '../lib/checklist';
 import { logEvent, getLiveEvents, calculateFunnelMetrics, generateSimulatedBenchmarkCohort } from '../lib/analytics';
+import {
+  CAFE_REGRESSION_FIXTURE,
+  AUTO_DETAILING_FIXTURE,
+  BOOKSTORE_FIXTURE,
+  ALL_FIXTURES,
+  BusinessScenarioFixture,
+} from '../lib/fixtures';
 import type {
-  CampaignArchetype,
-  IntakeScenarioInput,
-  MenuItemInput,
+  BusinessProfile,
+  CampaignObjectiveConfig,
+  MarketingObjectiveType,
+  BusinessReach,
+  OfferingItem,
   CampaignBrief,
   ChecklistMilestone,
   AnalyticsEvent,
@@ -43,29 +60,31 @@ export default function GrowthFlowPage() {
   const [variant, setVariant] = useState<'progressive_wizard' | 'single_form'>('progressive_wizard');
   const [currentStep, setCurrentStep] = useState<number>(1);
 
-  // Scenario state
-  const [businessName, setBusinessName] = useState<string>('The Daily Grind Café & Bakehouse');
-  const [neighborhoodVibe, setNeighborhoodVibe] = useState<string>('Cozy neighborhood spot near campus and creative offices');
-  const [slumpDay, setSlumpDay] = useState<string>('Tuesday & Wednesday');
-  const [slumpStartTime, setSlumpStartTime] = useState<string>('14:00');
-  const [slumpEndTime, setSlumpEndTime] = useState<string>('17:00');
-  const [archetype, setArchetype] = useState<CampaignArchetype>('bundle_hook');
+  // Business Profile state (arbitrary small business)
+  const [businessName, setBusinessName] = useState<string>(CAFE_REGRESSION_FIXTURE.profile.businessName);
+  const [description, setDescription] = useState<string>(CAFE_REGRESSION_FIXTURE.profile.description);
+  const [reach, setReach] = useState<BusinessReach>(CAFE_REGRESSION_FIXTURE.profile.reach);
+  const [targetAudience, setTargetAudience] = useState<string>(CAFE_REGRESSION_FIXTURE.profile.targetAudience);
+  const [offerings, setOfferings] = useState<OfferingItem[]>(CAFE_REGRESSION_FIXTURE.profile.offerings);
 
-  // Multi-item bundle state
-  const [items, setItems] = useState<MenuItemInput[]>([
-    { id: 'item-1', name: 'Oat Milk Honey Latte', regularPrice: 5.5, unitCost: 1.2 },
-    { id: 'item-2', name: 'Fresh Cardamom Bun', regularPrice: 4.5, unitCost: 1.8 },
-  ]);
-  const [packagingCost, setPackagingCost] = useState<number>(0.25);
-  const [promoPrice, setPromoPrice] = useState<number>(7.5);
-  const [extraPromoCost, setExtraPromoCost] = useState<number>(0.0);
+  // Marketing Objective state
+  const [objectiveType, setObjectiveType] = useState<MarketingObjectiveType>(CAFE_REGRESSION_FIXTURE.objective.type);
+  const [targetDays, setTargetDays] = useState<string>(CAFE_REGRESSION_FIXTURE.objective.targetWindow?.days || 'Tuesday & Wednesday');
+  const [startTime, setStartTime] = useState<string>(CAFE_REGRESSION_FIXTURE.objective.targetWindow?.startTime || '14:00');
+  const [endTime, setEndTime] = useState<string>(CAFE_REGRESSION_FIXTURE.objective.targetWindow?.endTime || '17:00');
+  const [promoPrice, setPromoPrice] = useState<number>(CAFE_REGRESSION_FIXTURE.objective.promoPrice);
+  const [additionalCost, setAdditionalCost] = useState<number>(CAFE_REGRESSION_FIXTURE.objective.additionalCost || 0.25);
+  const [capacityUnits, setCapacityUnits] = useState<number | undefined>(CAFE_REGRESSION_FIXTURE.objective.availableCapacityUnits);
+  const [targetRedemptions, setTargetRedemptions] = useState<number>(CAFE_REGRESSION_FIXTURE.objective.targetRedemptions || 10);
+  const [budgetLimit, setBudgetLimit] = useState<number | undefined>(undefined);
 
   // Generation & Handoff state
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [campaignBrief, setCampaignBrief] = useState<CampaignBrief | null>(null);
-  const [activeFormatTab, setActiveFormatTab] = useState<'instagram' | 'chalkboard'>('instagram');
+  const [activeFormatTab, setActiveFormatTab] = useState<'social' | 'display' | 'direct'>('social');
   const [editableCaption, setEditableCaption] = useState<string>('');
-  const [editableChalkboardHeadline, setEditableChalkboardHeadline] = useState<string>('');
+  const [editableHeadline, setEditableHeadline] = useState<string>('');
+  const [editableDirectMessage, setEditableDirectMessage] = useState<string>('');
   const [checklist, setChecklist] = useState<ChecklistMilestone[]>([]);
   const [copyToast, setCopyToast] = useState<string | null>(null);
 
@@ -81,7 +100,7 @@ export default function GrowthFlowPage() {
       window.sessionStorage.setItem('growflow_session_id', sId);
     }
     setSessionId(sId);
-    setChecklist(generateInitialChecklist('14:00'));
+    setChecklist(generateInitialChecklist('14:00', reach, objectiveType));
 
     // Emit onboarding_started
     logEvent(sId, 'onboarding_started', { variant });
@@ -91,9 +110,9 @@ export default function GrowthFlowPage() {
   // Update checklist when start time changes
   useEffect(() => {
     if (checklist.length > 0) {
-      setChecklist((prev) => recalculateChecklistTimes(prev, slumpStartTime));
+      setChecklist((prev) => recalculateChecklistTimes(prev, startTime));
     }
-  }, [slumpStartTime]);
+  }, [startTime]);
 
   function refreshLiveEvents() {
     if (typeof window !== 'undefined') {
@@ -102,49 +121,96 @@ export default function GrowthFlowPage() {
     }
   }
 
-  // Calculate deterministic contribution economics in real-time
-  const economics = useMemo(() => {
-    return calculateContributionEconomics({
-      items,
-      packagingCost,
-      promoPrice,
-      extraPromoCost,
-    });
-  }, [items, packagingCost, promoPrice, extraPromoCost]);
+  // Load a scenario fixture
+  const handleLoadFixture = (fixture: BusinessScenarioFixture) => {
+    setBusinessName(fixture.profile.businessName);
+    setDescription(fixture.profile.description);
+    setReach(fixture.profile.reach);
+    setTargetAudience(fixture.profile.targetAudience);
+    setOfferings(fixture.profile.offerings.map((o) => ({ ...o })));
 
-  // Log economics_calculated when step reaches review or prices change
-  useEffect(() => {
-    if (sessionId && currentStep === 3) {
-      logEvent(sessionId, 'economics_calculated', {
-        basePrice: economics.baselinePrice,
-        promoPrice: economics.promoPrice,
-        totalVarCost: economics.totalVariableCost,
-        hasNegativeMargin: economics.hasNegativeContribution,
-        contributionRate: economics.promoContributionRate,
-      });
-      refreshLiveEvents();
+    setObjectiveType(fixture.objective.type);
+    if (fixture.objective.targetWindow) {
+      setTargetDays(fixture.objective.targetWindow.days);
+      setStartTime(fixture.objective.targetWindow.startTime);
+      setEndTime(fixture.objective.targetWindow.endTime);
     }
-  }, [currentStep]);
+    setPromoPrice(fixture.objective.promoPrice);
+    setAdditionalCost(fixture.objective.additionalCost || 0);
+    setCapacityUnits(fixture.objective.availableCapacityUnits);
+    setTargetRedemptions(fixture.objective.targetRedemptions || 10);
+    setBudgetLimit(fixture.objective.budgetLimit);
 
-  // Handle adding an item to the bundle
-  const handleAddItem = () => {
-    const newItem: MenuItemInput = {
-      id: `item-${Date.now()}`,
-      name: 'Fresh Baked Treat',
-      regularPrice: 4.0,
-      unitCost: 1.5,
+    setChecklist(generateInitialChecklist(fixture.objective.targetWindow?.startTime || '14:00', fixture.profile.reach, fixture.objective.type));
+    setCurrentStep(1);
+    setCampaignBrief(null);
+  };
+
+  // Construct current Objective config
+  const currentObjectiveConfig: CampaignObjectiveConfig = useMemo(() => {
+    return {
+      type: objectiveType,
+      label: objectiveType.replace(/_/g, ' ').toUpperCase(),
+      description: `Drive volume via ${objectiveType.replace(/_/g, ' ')}`,
+      targetWindow: {
+        days: targetDays,
+        startTime,
+        endTime,
+      },
+      promoPrice,
+      additionalCost,
+      availableCapacityUnits: capacityUnits,
+      targetRedemptions,
+      budgetLimit,
     };
-    setItems([...items, newItem]);
+  }, [objectiveType, targetDays, startTime, endTime, promoPrice, additionalCost, capacityUnits, targetRedemptions, budgetLimit]);
+
+  // Construct current Business profile
+  const currentProfile: BusinessProfile = useMemo(() => {
+    return {
+      businessName,
+      description,
+      reach,
+      targetAudience,
+      offerings,
+      preferredChannels: reach === 'service_area' ? ['direct_message', 'social_post'] : ['social_post', 'display_sign'],
+    };
+  }, [businessName, description, reach, targetAudience, offerings]);
+
+  // Calculate composable feasibility report in real-time
+  const feasibilityReport = useMemo(() => {
+    return evaluateFeasibilityRules(offerings, currentObjectiveConfig, additionalCost);
+  }, [offerings, currentObjectiveConfig, additionalCost]);
+
+  // Extract unit contribution details
+  const unitContributionDetails = useMemo(() => {
+    return calculateContributionEconomics({
+      items: offerings,
+      packagingCost: additionalCost,
+      promoPrice,
+      extraPromoCost: 0,
+    });
+  }, [offerings, additionalCost, promoPrice]);
+
+  // Handle adding/removing offerings
+  const handleAddOffering = () => {
+    const newItem: OfferingItem = {
+      id: `offering-${Date.now()}`,
+      name: 'Additional Product / Service',
+      regularPrice: 20.0,
+      variableCost: 5.0,
+    };
+    setOfferings([...offerings, newItem]);
   };
 
-  const handleRemoveItem = (id: string) => {
-    if (items.length <= 1) return;
-    setItems(items.filter((i) => i.id !== id));
+  const handleRemoveOffering = (id: string) => {
+    if (offerings.length <= 1) return;
+    setOfferings(offerings.filter((o) => o.id !== id));
   };
 
-  const handleItemChange = (id: string, field: keyof MenuItemInput, value: any) => {
-    setItems(
-      items.map((item) => {
+  const handleOfferingChange = (id: string, field: keyof OfferingItem, value: any) => {
+    setOfferings(
+      offerings.map((item) => {
         if (item.id === id) {
           return { ...item, [field]: value };
         }
@@ -157,23 +223,16 @@ export default function GrowthFlowPage() {
   const handleGenerate = async () => {
     setIsGenerating(true);
     logEvent(sessionId, 'campaign_generation_started', {
-      archetype,
-      hasNegativeMargin: economics.hasNegativeContribution,
+      objectiveType,
+      rulesEvaluated: feasibilityReport.results.map((r) => r.ruleId),
+      overallStatus: feasibilityReport.overallStatus,
     });
     refreshLiveEvents();
 
     try {
-      const payload: IntakeScenarioInput = {
-        businessName,
-        neighborhoodVibe,
-        slumpDay,
-        slumpStartTime,
-        slumpEndTime,
-        archetype,
-        items,
-        packagingCost,
-        promoPrice,
-        extraPromoCost,
+      const payload = {
+        profile: currentProfile,
+        objective: currentObjectiveConfig,
       };
 
       const res = await fetch('/api/generate', {
@@ -188,13 +247,14 @@ export default function GrowthFlowPage() {
 
       const data: CampaignBrief = await res.json();
       setCampaignBrief(data);
-      setEditableCaption(data.instagram.caption);
-      setEditableChalkboardHeadline(data.chalkboard.headline);
+      setEditableCaption(data.formats.socialPost.caption);
+      setEditableHeadline(data.formats.displaySign.headline);
+      setEditableDirectMessage(data.formats.directMessage.messageBody);
       setCurrentStep(4); // Move to review step
 
       logEvent(sessionId, 'campaign_generated', {
         source: data.source,
-        archetype: data.archetype,
+        objectiveType: data.objectiveType,
       });
       refreshLiveEvents();
     } catch (err: any) {
@@ -207,22 +267,12 @@ export default function GrowthFlowPage() {
   };
 
   // Handle copy to clipboard
-  const handleCopy = (text: string, format: 'instagram' | 'chalkboard') => {
+  const handleCopy = (text: string, formatName: string) => {
     navigator.clipboard.writeText(text);
-    setCopyToast(`Copied ${format === 'instagram' ? 'Instagram Caption' : 'Chalkboard Layout'} to clipboard!`);
+    setCopyToast(`Copied ${formatName} to clipboard!`);
     setTimeout(() => setCopyToast(null), 3000);
 
-    logEvent(sessionId, 'materials_copied', { formatCopied: format });
-    refreshLiveEvents();
-  };
-
-  // Handle caption edit
-  const handleCaptionChange = (val: string) => {
-    setEditableCaption(val);
-    logEvent(sessionId, 'campaign_edited', {
-      targetFormat: 'instagram',
-      fieldModified: 'caption',
-    });
+    logEvent(sessionId, 'materials_copied', { formatCopied: formatName });
     refreshLiveEvents();
   };
 
@@ -234,7 +284,7 @@ export default function GrowthFlowPage() {
 
     logEvent(sessionId, 'campaign_approved', {
       source: campaignBrief.source,
-      wasEdited: editableCaption !== campaignBrief.instagram.caption,
+      wasEdited: editableCaption !== campaignBrief.formats.socialPost.caption,
     });
     refreshLiveEvents();
   };
@@ -280,16 +330,16 @@ export default function GrowthFlowPage() {
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-emerald-600 flex items-center justify-center text-white font-bold shadow-sm">
-              <Coffee className="w-5 h-5" />
+              <Zap className="w-5 h-5" />
             </div>
             <div>
               <span className="font-bold text-lg text-slate-900 flex items-center gap-2">
                 GrowthFlow
                 <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 font-mono">
-                  v1.0 APM MVP
+                  v2.0 Generic Architect
                 </span>
               </span>
-              <p className="text-xs text-slate-500">Off-Peak Campaign Architect for Independent Cafés</p>
+              <p className="text-xs text-slate-500">Configuration-Driven Small Business Marketing Engine</p>
             </div>
           </div>
 
@@ -336,41 +386,36 @@ export default function GrowthFlowPage() {
       <main className="max-w-6xl mx-auto px-4 mt-8">
         {activeTab === 'studio' ? (
           <div>
-            {/* Header info & A/B Switcher */}
+            {/* Header info & Sample Presets */}
             <div className="flex flex-col md:flex-row md:items-center justify-between pb-6 mb-6 border-b border-slate-200 gap-4">
               <div>
                 <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-                  Weekday Afternoon Slump Campaign Planner
+                  Small Business Promotional Campaign Planner
                 </h1>
                 <p className="text-sm text-slate-600 mt-1">
-                  Design a margin-safe bundle offer and generate local promotional copy for your café in under 3 minutes.
+                  Describe any small business, select an objective, verify composable feasibility rules, and generate multi-format copy.
                 </p>
               </div>
 
-              {/* Experiment Variant Switcher */}
-              <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 text-xs">
-                <Sliders className="w-3.5 h-3.5 text-slate-500" />
-                <span className="text-slate-500 font-medium">Flow Variant:</span>
-                <button
-                  onClick={() => setVariant('progressive_wizard')}
-                  className={`px-2 py-0.5 rounded font-semibold ${
-                    variant === 'progressive_wizard'
-                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                      : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  3-Step Wizard
-                </button>
-                <button
-                  onClick={() => setVariant('single_form')}
-                  className={`px-2 py-0.5 rounded font-semibold ${
-                    variant === 'single_form'
-                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                      : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  Single Form
-                </button>
+              {/* Sample Fixtures Quick-Load */}
+              <div className="flex flex-col items-end gap-1.5">
+                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                  Load Regression Scenario:
+                </span>
+                <div className="flex items-center gap-1.5 bg-white p-1 rounded-lg border border-slate-200 text-xs">
+                  {ALL_FIXTURES.map((fix) => (
+                    <button
+                      key={fix.id}
+                      onClick={() => handleLoadFixture(fix)}
+                      className="px-2.5 py-1 rounded hover:bg-slate-100 font-semibold text-slate-700 transition-all"
+                      title={fix.industryCategory}
+                    >
+                      {fix.id === 'cafe_slump' && '☕ Café'}
+                      {fix.id === 'auto_detailing' && '🚗 Auto Detail'}
+                      {fix.id === 'bookstore_retail' && '📚 Bookstore'}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -379,13 +424,13 @@ export default function GrowthFlowPage() {
               <div className="mb-8">
                 <div className="flex items-center justify-between text-xs font-semibold text-slate-500 mb-2">
                   <span className={currentStep >= 1 ? 'text-emerald-700 font-bold' : ''}>
-                    1. Store & Slump Window
+                    1. Business Profile & Context
                   </span>
                   <span className={currentStep >= 2 ? 'text-emerald-700 font-bold' : ''}>
-                    2. Campaign Strategy
+                    2. Growth Objective & Timing
                   </span>
                   <span className={currentStep >= 3 ? 'text-emerald-700 font-bold' : ''}>
-                    3. Bundle & Economics
+                    3. Offerings & Feasibility Checks
                   </span>
                 </div>
                 <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
@@ -402,73 +447,69 @@ export default function GrowthFlowPage() {
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                 {/* Form Inputs (Steps 1, 2, 3) */}
                 <div className="lg:col-span-7 space-y-6">
-                  {/* STEP 1: Store & Timing */}
+                  {/* STEP 1: Generic Business Profile */}
                   {(variant === 'single_form' || currentStep === 1) && (
                     <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
                       <div className="flex items-center gap-2 pb-3 border-b border-slate-100">
                         <Store className="w-5 h-5 text-emerald-600" />
-                        <h2 className="font-semibold text-slate-900">Step 1: Store & Target Slump Period</h2>
+                        <h2 className="font-semibold text-slate-900">Step 1: Business Profile & Reach</h2>
                       </div>
 
                       <div>
                         <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                          Café / Bakery Name
+                          Business Name
                         </label>
                         <input
                           type="text"
                           value={businessName}
                           onChange={(e) => setBusinessName(e.target.value)}
                           className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                          placeholder="e.g. Blue Door Café"
+                          placeholder="e.g. Apex Mobile Detailing / The Daily Grind"
                         />
                       </div>
 
                       <div>
                         <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                          Neighborhood & Vibe
+                          Natural Language Business Description (No Fixed Dropdown)
                         </label>
-                        <input
-                          type="text"
-                          value={neighborhoodVibe}
-                          onChange={(e) => setNeighborhoodVibe(e.target.value)}
+                        <textarea
+                          rows={3}
+                          value={description}
+                          onChange={(e) => setDescription(e.target.value)}
                           className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                          placeholder="e.g. Cozy local specialty coffee bar with regulars & students"
+                          placeholder="Describe what your business does, who you serve, and your unique approach..."
                         />
+                        <p className="text-xs text-slate-500 mt-1">
+                          Describe any business: food, trade service, boutique fitness, tutoring, retail, etc.
+                        </p>
                       </div>
 
-                      <div className="grid grid-cols-3 gap-3">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
                           <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                            Slow Days
+                            Geographic / Online Reach
+                          </label>
+                          <select
+                            value={reach}
+                            onChange={(e) => setReach(e.target.value as BusinessReach)}
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                          >
+                            <option value="local_foot_traffic">Local Walk-in / Foot Traffic</option>
+                            <option value="service_area">Service Area / Mobile (On-site)</option>
+                            <option value="online_nationwide">Online / Regional Delivery</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                            Target Customers
                           </label>
                           <input
                             type="text"
-                            value={slumpDay}
-                            onChange={(e) => setSlumpDay(e.target.value)}
+                            value={targetAudience}
+                            onChange={(e) => setTargetAudience(e.target.value)}
                             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                            placeholder="Tuesday & Wednesday"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                            Slump Start Time
-                          </label>
-                          <input
-                            type="time"
-                            value={slumpStartTime}
-                            onChange={(e) => setSlumpStartTime(e.target.value)}
-                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                            Slump End Time
-                          </label>
-                          <input
-                            type="time"
-                            value={slumpEndTime}
-                            onChange={(e) => setSlumpEndTime(e.target.value)}
-                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                            placeholder="e.g. Busy homeowners, students, commuters"
                           />
                         </div>
                       </div>
@@ -478,16 +519,16 @@ export default function GrowthFlowPage() {
                           <button
                             onClick={() => {
                               setCurrentStep(2);
-                              logEvent(sessionId, 'scenario_configured', {
+                              logEvent(sessionId, 'profile_configured', {
                                 businessName,
-                                slumpDay,
-                                slumpWindow: `${slumpStartTime}-${slumpEndTime}`,
+                                reach,
+                                targetAudience,
                               });
                               refreshLiveEvents();
                             }}
                             className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm rounded-lg flex items-center gap-2 shadow-sm"
                           >
-                            Next: Select Offer Strategy
+                            Next: Select Marketing Objective
                             <ArrowRight className="w-4 h-4" />
                           </button>
                         </div>
@@ -495,61 +536,96 @@ export default function GrowthFlowPage() {
                     </div>
                   )}
 
-                  {/* STEP 2: Campaign Archetype */}
+                  {/* STEP 2: Marketing Objective */}
                   {(variant === 'single_form' || currentStep === 2) && (
                     <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
                       <div className="flex items-center gap-2 pb-3 border-b border-slate-100">
                         <Layers className="w-5 h-5 text-emerald-600" />
-                        <h2 className="font-semibold text-slate-900">Step 2: Choose Campaign Archetype</h2>
+                        <h2 className="font-semibold text-slate-900">Step 2: Select Growth Objective</h2>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                        {/* Option 1: Bundle Hook */}
                         <div
-                          onClick={() => setArchetype('bundle_hook')}
+                          onClick={() => setObjectiveType('fill_capacity')}
                           className={`p-4 rounded-xl border cursor-pointer transition-all ${
-                            archetype === 'bundle_hook'
+                            objectiveType === 'fill_capacity'
                               ? 'border-emerald-600 bg-emerald-50/50 shadow-sm ring-1 ring-emerald-600'
                               : 'border-slate-200 hover:border-slate-300'
                           }`}
                         >
-                          <span className="text-xl mb-2 block">☕🥐</span>
-                          <h3 className="font-bold text-sm text-slate-900">The Bundle Hook</h3>
+                          <span className="text-xl mb-2 block">⏰⚡</span>
+                          <h3 className="font-bold text-sm text-slate-900">Fill Idle Capacity</h3>
                           <p className="text-xs text-slate-600 mt-1">
-                            Pair a high-margin drink with fresh pastry. Clears day-of bake while safeguarding profit.
+                            Monetize slow weekday hours, empty tables, or open appointment slots.
                           </p>
                         </div>
 
-                        {/* Option 2: Remote Work Perk */}
                         <div
-                          onClick={() => setArchetype('remote_work_perk')}
+                          onClick={() => setObjectiveType('acquire_new_customers')}
                           className={`p-4 rounded-xl border cursor-pointer transition-all ${
-                            archetype === 'remote_work_perk'
+                            objectiveType === 'acquire_new_customers'
                               ? 'border-emerald-600 bg-emerald-50/50 shadow-sm ring-1 ring-emerald-600'
                               : 'border-slate-200 hover:border-slate-300'
                           }`}
                         >
-                          <span className="text-xl mb-2 block">💻✨</span>
-                          <h3 className="font-bold text-sm text-slate-900">Remote Work Pass</h3>
+                          <span className="text-xl mb-2 block">🎁👋</span>
+                          <h3 className="font-bold text-sm text-slate-900">First-Time Customers</h3>
                           <p className="text-xs text-slate-600 mt-1">
-                            Monetize dead tables with refill perks or afternoon focus snacks for work-from-home neighbors.
+                            Lower purchase friction with an introductory hook to win new regulars.
                           </p>
                         </div>
 
-                        {/* Option 3: Neighbor 2-Pack */}
                         <div
-                          onClick={() => setArchetype('neighbor_2pack')}
+                          onClick={() => setObjectiveType('promote_bundle')}
                           className={`p-4 rounded-xl border cursor-pointer transition-all ${
-                            archetype === 'neighbor_2pack'
+                            objectiveType === 'promote_bundle'
                               ? 'border-emerald-600 bg-emerald-50/50 shadow-sm ring-1 ring-emerald-600'
                               : 'border-slate-200 hover:border-slate-300'
                           }`}
                         >
-                          <span className="text-xl mb-2 block">👥🤝</span>
-                          <h3 className="font-bold text-sm text-slate-900">Bring a Colleague</h3>
+                          <span className="text-xl mb-2 block">📦🤝</span>
+                          <h3 className="font-bold text-sm text-slate-900">Promote Bundle</h3>
                           <p className="text-xs text-slate-600 mt-1">
-                            Social 2-for deal to incentivize coffee runners to bring a friend during afternoon slump.
+                            Pair complementary products or services to raise transaction ticket value.
                           </p>
+                        </div>
+                      </div>
+
+                      {/* Progressive Timing Inputs */}
+                      <div className="grid grid-cols-3 gap-3 pt-2">
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                            Target Days
+                          </label>
+                          <input
+                            type="text"
+                            value={targetDays}
+                            onChange={(e) => setTargetDays(e.target.value)}
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"
+                            placeholder="Tuesday & Wednesday"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                            Start Time
+                          </label>
+                          <input
+                            type="time"
+                            value={startTime}
+                            onChange={(e) => setStartTime(e.target.value)}
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                            End Time
+                          </label>
+                          <input
+                            type="time"
+                            value={endTime}
+                            onChange={(e) => setEndTime(e.target.value)}
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"
+                          />
                         </div>
                       </div>
 
@@ -565,12 +641,12 @@ export default function GrowthFlowPage() {
                           <button
                             onClick={() => {
                               setCurrentStep(3);
-                              logEvent(sessionId, 'archetype_selected', { archetype });
+                              logEvent(sessionId, 'objective_selected', { objective: objectiveType });
                               refreshLiveEvents();
                             }}
                             className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm rounded-lg flex items-center gap-2 shadow-sm"
                           >
-                            Next: Configure Bundle Economics
+                            Next: Configure Offerings & Feasibility
                             <ArrowRight className="w-4 h-4" />
                           </button>
                         </div>
@@ -578,40 +654,40 @@ export default function GrowthFlowPage() {
                     </div>
                   )}
 
-                  {/* STEP 3: Multi-item Bundle & Pricing */}
+                  {/* STEP 3: Offerings & Composable Feasibility Constraints */}
                   {(variant === 'single_form' || currentStep === 3) && (
                     <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-5">
                       <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                         <div className="flex items-center gap-2">
                           <DollarSign className="w-5 h-5 text-emerald-600" />
-                          <h2 className="font-semibold text-slate-900">Step 3: Bundle Items & Variable Costs</h2>
+                          <h2 className="font-semibold text-slate-900">Step 3: Offerings, Costs & Constraints</h2>
                         </div>
                         <button
-                          onClick={handleAddItem}
+                          onClick={handleAddOffering}
                           className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 bg-emerald-50 px-2 py-1 rounded border border-emerald-200"
                         >
                           <Plus className="w-3.5 h-3.5" />
-                          Add Item to Bundle
+                          Add Item / Service
                         </button>
                       </div>
 
-                      {/* Item rows */}
+                      {/* Offerings Table */}
                       <div className="space-y-3">
-                        {items.map((item, index) => (
+                        {offerings.map((item, index) => (
                           <div
                             key={item.id}
                             className="p-3 bg-slate-50 rounded-lg border border-slate-200 flex flex-col md:flex-row gap-3 items-start md:items-center"
                           >
                             <div className="flex-1">
                               <label className="block text-xs font-medium text-slate-500 mb-1">
-                                Item #{index + 1} Name
+                                Item / Service #{index + 1}
                               </label>
                               <input
                                 type="text"
                                 value={item.name}
-                                onChange={(e) => handleItemChange(item.id, 'name', e.target.value)}
+                                onChange={(e) => handleOfferingChange(item.id, 'name', e.target.value)}
                                 className="w-full px-2.5 py-1.5 border border-slate-300 rounded text-sm bg-white"
-                                placeholder="Item name"
+                                placeholder="Service or product name"
                               />
                             </div>
                             <div className="w-28">
@@ -620,10 +696,10 @@ export default function GrowthFlowPage() {
                               </label>
                               <input
                                 type="number"
-                                step="0.25"
+                                step="0.50"
                                 value={item.regularPrice}
                                 onChange={(e) =>
-                                  handleItemChange(item.id, 'regularPrice', parseFloat(e.target.value) || 0)
+                                  handleOfferingChange(item.id, 'regularPrice', parseFloat(e.target.value) || 0)
                                 }
                                 className="w-full px-2.5 py-1.5 border border-slate-300 rounded text-sm bg-white"
                               />
@@ -634,19 +710,19 @@ export default function GrowthFlowPage() {
                               </label>
                               <input
                                 type="number"
-                                step="0.10"
-                                value={item.unitCost ?? ''}
+                                step="0.50"
+                                value={item.variableCost ?? ''}
                                 onChange={(e) => {
                                   const val = e.target.value === '' ? null : parseFloat(e.target.value);
-                                  handleItemChange(item.id, 'unitCost', isNaN(val as any) ? null : val);
+                                  handleOfferingChange(item.id, 'variableCost', isNaN(val as any) ? null : val);
                                 }}
                                 className="w-full px-2.5 py-1.5 border border-slate-300 rounded text-sm bg-white"
-                                placeholder="e.g. 1.20"
+                                placeholder="Direct cost"
                               />
                             </div>
-                            {items.length > 1 && (
+                            {offerings.length > 1 && (
                               <button
-                                onClick={() => handleRemoveItem(item.id)}
+                                onClick={() => handleRemoveOffering(item.id)}
                                 className="text-slate-400 hover:text-red-500 p-1.5 rounded self-end md:self-center"
                                 title="Remove item"
                               >
@@ -657,41 +733,40 @@ export default function GrowthFlowPage() {
                         ))}
                       </div>
 
-                      {/* Packaging & Promotional Bundle Price */}
+                      {/* Pricing & Composable Constraints */}
                       <div className="pt-2 border-t border-slate-100 grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
-                          <label className="block text-xs font-semibold text-slate-700 mb-1">
-                            Packaging & Consumables Cost ($)
-                          </label>
-                          <input
-                            type="number"
-                            step="0.05"
-                            value={packagingCost}
-                            onChange={(e) => setPackagingCost(parseFloat(e.target.value) || 0)}
-                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"
-                            placeholder="Cups, napkins, sleeves"
-                          />
-                          <p className="text-xs text-slate-500 mt-1">Average \$0.20-\$0.40 per to-go order</p>
-                        </div>
-
-                        <div>
                           <label className="block text-xs font-semibold text-emerald-800 mb-1">
-                            Promotional Bundle Price ($) *
+                            Promotional Offer Price ($) *
                           </label>
                           <input
                             type="number"
-                            step="0.25"
+                            step="0.50"
                             value={promoPrice}
                             onChange={(e) => setPromoPrice(parseFloat(e.target.value) || 0)}
                             className="w-full px-3 py-2 border-2 border-emerald-500 rounded-lg text-sm font-bold text-slate-900 bg-white"
-                            placeholder="e.g. 7.50"
+                            placeholder="e.g. 19.50"
                           />
                           <p className="text-xs text-slate-500 mt-1">
-                            Regular bundle total:{' '}
+                            Baseline Regular Value:{' '}
                             <span className="font-semibold text-slate-700">
-                              ${economics.baselinePrice.toFixed(2)}
+                              ${offerings.reduce((s, i) => s + i.regularPrice, 0).toFixed(2)}
                             </span>
                           </p>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-700 mb-1">
+                            Available Capacity (Slots / Seats)
+                          </label>
+                          <input
+                            type="number"
+                            value={capacityUnits ?? ''}
+                            onChange={(e) => setCapacityUnits(e.target.value === '' ? undefined : parseInt(e.target.value, 10))}
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"
+                            placeholder="e.g. 6 appointment slots, 20 tables"
+                          />
+                          <p className="text-xs text-slate-500 mt-1">Used by capacity constraint check</p>
                         </div>
                       </div>
 
@@ -711,13 +786,13 @@ export default function GrowthFlowPage() {
 
                         <button
                           onClick={handleGenerate}
-                          disabled={isGenerating || economics.promoPrice <= 0}
+                          disabled={isGenerating || promoPrice <= 0}
                           className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-sm rounded-lg flex items-center gap-2 shadow-md transition-all"
                         >
                           {isGenerating ? (
                             <>
                               <RefreshCw className="w-4 h-4 animate-spin" />
-                              Structuring Margin-Safe Brief...
+                              Running Pluggable Checks...
                             </>
                           ) : (
                             <>
@@ -731,137 +806,105 @@ export default function GrowthFlowPage() {
                   )}
                 </div>
 
-                {/* Right Column: DETERMINISTIC CONTRIBUTION ECONOMICS ENGINE */}
+                {/* Right Column: COMPOSABLE FEASIBILITY CHECKS PANEL */}
                 <div className="lg:col-span-5">
                   <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm sticky top-24 space-y-4">
                     <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                       <div className="flex items-center gap-2">
-                        <TrendingUp className="w-5 h-5 text-emerald-600" />
-                        <h2 className="font-semibold text-slate-900">Unit Contribution Economics</h2>
+                        <ShieldCheck className="w-5 h-5 text-emerald-600" />
+                        <h2 className="font-semibold text-slate-900">Extensible Feasibility Rules</h2>
                       </div>
                       <span className="text-xs px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-mono font-medium border border-emerald-200">
-                        Deterministic Engine
+                        Composable Engine
                       </span>
                     </div>
 
                     <p className="text-xs text-slate-500 leading-relaxed">
-                      Evaluates gross margin contribution above direct variable ingredient and packaging costs. Does
-                      not claim overall store net profit (which depends on fixed rent & staffing).
+                      Deterministic verification modules executed based on explicit business inputs. Never invents costs or certifies profitability.
                     </p>
 
-                    {/* ALERTS */}
-                    {economics.hasNegativeContribution && (
-                      <div className="p-3.5 bg-red-50 border border-red-200 rounded-lg flex gap-3 text-red-800 text-xs">
-                        <AlertTriangle className="w-5 h-5 text-red-600 shrink-0" />
-                        <div>
-                          <strong className="font-bold block">Negative Unit Contribution Alert!</strong>
-                          Promotional price is below your total variable cost. Every unit sold loses cash ($
-                          {Math.abs(economics.promoContribution ?? 0).toFixed(2)}). Breakeven volume is non-viable.
+                    {/* RENDER PLUGGABLE RULE RESULTS */}
+                    <div className="space-y-3">
+                      {feasibilityReport.results.map((rule) => (
+                        <div
+                          key={rule.ruleId}
+                          className={`p-3.5 rounded-lg border text-xs space-y-1 ${
+                            rule.status === 'critical_alert'
+                              ? 'bg-red-50 border-red-200 text-red-900'
+                              : rule.status === 'warning'
+                              ? 'bg-amber-50 border-amber-200 text-amber-900'
+                              : rule.status === 'missing_inputs'
+                              ? 'bg-slate-100 border-slate-200 text-slate-700'
+                              : 'bg-emerald-50/60 border-emerald-200 text-emerald-950'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between font-bold">
+                            <span>{rule.name}</span>
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] uppercase font-mono ${
+                                rule.status === 'critical_alert'
+                                  ? 'bg-red-200 text-red-800'
+                                  : rule.status === 'warning'
+                                  ? 'bg-amber-200 text-amber-800'
+                                  : rule.status === 'missing_inputs'
+                                  ? 'bg-slate-200 text-slate-700'
+                                  : 'bg-emerald-200 text-emerald-800'
+                              }`}
+                            >
+                              {rule.status.replace('_', ' ')}
+                            </span>
+                          </div>
+                          <p className="leading-relaxed">{rule.summary}</p>
                         </div>
-                      </div>
-                    )}
+                      ))}
+                    </div>
 
-                    {economics.hasThinMarginWarning && (
-                      <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-lg flex gap-3 text-amber-800 text-xs">
-                        <Info className="w-5 h-5 text-amber-600 shrink-0" />
-                        <div>
-                          <strong className="font-bold block">Low Contribution Rate Warning</strong>
-                          Contribution rate is {economics.promoContributionRate}%, which is below the recommended 35%
-                          safety threshold. Ensure your staff can handle volume.
-                        </div>
+                    {/* Unit Contribution Metrics Detail */}
+                    <div className="space-y-2 pt-2 border-t border-slate-100 text-xs">
+                      <div className="flex justify-between py-1 border-b border-slate-50">
+                        <span className="text-slate-600">Regular Offering Value:</span>
+                        <span className="font-semibold text-slate-900">${unitContributionDetails.baselinePrice.toFixed(2)}</span>
                       </div>
-                    )}
-
-                    {economics.hasMissingCost && (
-                      <div className="p-3.5 bg-slate-100 border border-slate-200 rounded-lg flex gap-3 text-slate-700 text-xs">
-                        <Info className="w-5 h-5 text-slate-500 shrink-0" />
-                        <div>
-                          <strong className="font-bold block">Unit Costs Omitted</strong>
-                          Contribution economics cannot be verified without item costs. Typical café COGS ranges
-                          between 25% and 35%.
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Calculation Metrics Breakdown */}
-                    <div className="space-y-3 pt-2">
-                      <div className="flex justify-between items-center text-sm py-1 border-b border-slate-100">
-                        <span className="text-slate-600">Regular Bundle Value:</span>
-                        <span className="font-semibold text-slate-900">${economics.baselinePrice.toFixed(2)}</span>
-                      </div>
-
-                      <div className="flex justify-between items-center text-sm py-1 border-b border-slate-100">
-                        <span className="text-slate-600">Total Variable Cost (COGS + Packaging):</span>
+                      <div className="flex justify-between py-1 border-b border-slate-50">
+                        <span className="text-slate-600">Total Variable Costs:</span>
                         <span className="font-semibold text-slate-900">
-                          {economics.totalVariableCost !== null
-                            ? `$${economics.totalVariableCost.toFixed(2)}`
+                          {unitContributionDetails.totalVariableCost !== null
+                            ? `$${unitContributionDetails.totalVariableCost.toFixed(2)}`
                             : 'Omitted'}
                         </span>
                       </div>
-
-                      <div className="flex justify-between items-center text-sm py-1 border-b border-slate-100">
-                        <span className="text-slate-600">Promotional Bundle Price:</span>
-                        <span className="font-bold text-emerald-700">${economics.promoPrice.toFixed(2)}</span>
-                      </div>
-
-                      <div className="flex justify-between items-center text-sm py-1 border-b border-slate-100 bg-slate-50 px-2 rounded">
-                        <span className="text-slate-700 font-medium">Promo Unit Contribution ($):</span>
+                      <div className="flex justify-between py-1 border-b border-slate-50 bg-slate-50 px-2 rounded">
+                        <span className="text-slate-700 font-medium">Promo Unit Contribution:</span>
                         <span
                           className={`font-bold ${
-                            economics.hasNegativeContribution ? 'text-red-600' : 'text-emerald-700'
+                            unitContributionDetails.hasNegativeContribution ? 'text-red-600' : 'text-emerald-700'
                           }`}
                         >
-                          {economics.promoContribution !== null
-                            ? `$${economics.promoContribution.toFixed(2)}`
+                          {unitContributionDetails.promoContribution !== null
+                            ? `$${unitContributionDetails.promoContribution.toFixed(2)}`
                             : 'Unavailable'}
                         </span>
                       </div>
-
-                      <div className="flex justify-between items-center text-sm py-1 border-b border-slate-100">
-                        <span className="text-slate-600">Promo Contribution Rate (%):</span>
-                        <span className="font-bold text-slate-900">
-                          {economics.promoContributionRate !== null
-                            ? `${economics.promoContributionRate}%`
-                            : 'Unavailable'}
-                        </span>
-                      </div>
-
-                      <div className="flex justify-between items-center text-sm py-1">
+                      <div className="flex justify-between py-1">
                         <span className="text-slate-600">Breakeven Volume Multiplier:</span>
                         <span
                           className={`font-mono font-bold ${
-                            economics.breakevenMultiplier === 'non_viable'
+                            unitContributionDetails.breakevenMultiplier === 'non_viable'
                               ? 'text-red-600'
                               : 'text-slate-900'
                           }`}
                         >
-                          {typeof economics.breakevenMultiplier === 'number'
-                            ? `${economics.breakevenMultiplier}x`
-                            : economics.breakevenMultiplier === 'non_viable'
-                            ? 'Non-viable'
-                            : 'Unavailable'}
+                          {typeof unitContributionDetails.breakevenMultiplier === 'number'
+                            ? `${unitContributionDetails.breakevenMultiplier}x`
+                            : unitContributionDetails.breakevenMultiplier}
                         </span>
                       </div>
-                    </div>
-
-                    {/* Educational Explainer */}
-                    <div className="p-3 bg-slate-50 rounded-lg text-xs text-slate-600 border border-slate-100">
-                      <strong>Volume Breakeven Explanation:</strong>
-                      {typeof economics.breakeven10SalesVolume === 'number' ? (
-                        <p className="mt-1">
-                          You need to sell <span className="font-bold text-slate-900">{economics.breakeven10SalesVolume} promotional bundles</span> during the slump to generate the same gross contribution that 10 regular-price sales would produce.
-                        </p>
-                      ) : (
-                        <p className="mt-1">
-                          Breakeven volume modeling requires positive unit contribution and entered ingredient costs.
-                        </p>
-                      )}
                     </div>
                   </div>
                 </div>
               </div>
             ) : (
-              /* STEP 4: CAMPAIGN BRIEF REVIEW, EDITING & DELIBERATE HANDOFF */
+              /* STEP 4: CAMPAIGN BRIEF REVIEW, MULTI-FORMAT COPY & DELIBERATE HANDOFF */
               campaignBrief && (
                 <div className="space-y-8 animate-in fade-in duration-300">
                   {/* Status & Action Bar */}
@@ -879,11 +922,12 @@ export default function GrowthFlowPage() {
                           {campaignBrief.status === 'approved' ? 'Approved & Ready' : 'Draft Brief'}
                         </span>
                         <span className="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-mono">
-                          {campaignBrief.source === 'llm' ? 'Live LLM' : 'Verified Offline Template'}
+                          {campaignBrief.source === 'llm' ? 'Live LLM' : 'Verified Deterministic'}
                         </span>
                       </div>
                       <p className="text-xs text-slate-500 mt-1">
-                        Campaign Window: <span className="font-medium text-slate-700">{slumpDay} ({slumpStartTime} - {slumpEndTime})</span> • Promo Price:{' '}
+                        Business: <span className="font-semibold text-slate-700">{businessName}</span> • Objective:{' '}
+                        <span className="font-semibold text-slate-700">{objectiveType.replace(/_/g, ' ')}</span> • Promo Price:{' '}
                         <span className="font-bold text-emerald-700">${promoPrice.toFixed(2)}</span>
                       </p>
                     </div>
@@ -894,7 +938,7 @@ export default function GrowthFlowPage() {
                         className="px-3 py-2 text-slate-600 hover:text-slate-900 text-sm font-semibold flex items-center gap-1 border border-slate-200 rounded-lg hover:bg-slate-50"
                       >
                         <ArrowLeft className="w-4 h-4" />
-                        Modify Offer
+                        Modify Inputs
                       </button>
 
                       <button
@@ -919,43 +963,55 @@ export default function GrowthFlowPage() {
                     <p className="text-sm text-emerald-950 leading-relaxed">{campaignBrief.strategicRationale}</p>
                   </div>
 
-                  {/* TWO ACTIONABLE OUTPUT FORMATS */}
+                  {/* THREE ACTIONABLE OUTPUT FORMATS */}
                   <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
                     {/* Format Tabs */}
-                    <div className="flex border-b border-slate-200 bg-slate-50">
+                    <div className="flex border-b border-slate-200 bg-slate-50 overflow-x-auto">
                       <button
-                        onClick={() => setActiveFormatTab('instagram')}
-                        className={`px-6 py-3 text-sm font-bold border-b-2 transition-all flex items-center gap-2 ${
-                          activeFormatTab === 'instagram'
+                        onClick={() => setActiveFormatTab('social')}
+                        className={`px-5 py-3 text-sm font-bold border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${
+                          activeFormatTab === 'social'
                             ? 'border-emerald-600 text-emerald-700 bg-white'
                             : 'border-transparent text-slate-600 hover:text-slate-900'
                         }`}
                       >
                         <span>📸</span>
-                        Format A: Organic Instagram Caption
+                        Format 1: Social Media Post
                       </button>
                       <button
-                        onClick={() => setActiveFormatTab('chalkboard')}
-                        className={`px-6 py-3 text-sm font-bold border-b-2 transition-all flex items-center gap-2 ${
-                          activeFormatTab === 'chalkboard'
+                        onClick={() => setActiveFormatTab('display')}
+                        className={`px-5 py-3 text-sm font-bold border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${
+                          activeFormatTab === 'display'
                             ? 'border-emerald-600 text-emerald-700 bg-white'
                             : 'border-transparent text-slate-600 hover:text-slate-900'
                         }`}
                       >
                         <span>🖍️</span>
-                        Format B: Sidewalk Chalkboard Sign
+                        Format 2: Physical / Counter Sign
+                      </button>
+                      <button
+                        onClick={() => setActiveFormatTab('direct')}
+                        className={`px-5 py-3 text-sm font-bold border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${
+                          activeFormatTab === 'direct'
+                            ? 'border-emerald-600 text-emerald-700 bg-white'
+                            : 'border-transparent text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        <span>💬</span>
+                        Format 3: Direct Message / SMS
                       </button>
                     </div>
 
                     <div className="p-6">
-                      {activeFormatTab === 'instagram' ? (
+                      {/* FORMAT 1: SOCIAL POST */}
+                      {activeFormatTab === 'social' && (
                         <div className="space-y-4">
                           <div className="flex items-center justify-between">
                             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                              In-Line Editable Post Caption
+                              In-Line Editable Social Caption
                             </span>
                             <button
-                              onClick={() => handleCopy(editableCaption, 'instagram')}
+                              onClick={() => handleCopy(editableCaption, 'Social Media Caption')}
                               className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
                             >
                               <Copy className="w-3.5 h-3.5" />
@@ -965,27 +1021,27 @@ export default function GrowthFlowPage() {
 
                           <textarea
                             value={editableCaption}
-                            onChange={(e) => handleCaptionChange(e.target.value)}
-                            rows={8}
+                            onChange={(e) => setEditableCaption(e.target.value)}
+                            rows={7}
                             className="w-full p-4 border border-slate-300 rounded-lg text-sm text-slate-800 leading-relaxed font-sans focus:ring-2 focus:ring-emerald-500 focus:outline-none"
                           />
 
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
                             <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
                               <span className="text-xs font-bold text-slate-700 block mb-1">
-                                Suggested Photo Angle
+                                Photo / Visual Direction
                               </span>
                               <p className="text-xs text-slate-600 leading-relaxed">
-                                {campaignBrief.instagram.photoDirection}
+                                {campaignBrief.formats.socialPost.photoDirection}
                               </p>
                             </div>
 
                             <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
                               <span className="text-xs font-bold text-slate-700 block mb-1">
-                                Recommended Local Hashtags
+                                Recommended Hashtags
                               </span>
                               <div className="flex flex-wrap gap-1 mt-1">
-                                {campaignBrief.instagram.hashtags.map((tag, idx) => (
+                                {campaignBrief.formats.socialPost.hashtags.map((tag, idx) => (
                                   <span
                                     key={idx}
                                     className="text-xs px-2 py-0.5 rounded bg-white text-slate-700 border border-slate-200 font-mono"
@@ -997,35 +1053,37 @@ export default function GrowthFlowPage() {
                             </div>
                           </div>
                         </div>
-                      ) : (
-                        /* CHALKBOARD FORMAT */
+                      )}
+
+                      {/* FORMAT 2: DISPLAY / CHALKBOARD SIGN */}
+                      {activeFormatTab === 'display' && (
                         <div className="space-y-4">
                           <div className="flex items-center justify-between">
                             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                              Sidewalk Chalkboard Spec & Visual Layout
+                              Display / Sidewalk Sign Spec
                             </span>
                             <button
                               onClick={() => {
-                                const fullChalkText = `${editableChalkboardHeadline}\n\n${campaignBrief.chalkboard.bulletPoints.map((b) => `• ${b}`).join('\n')}\n\n${campaignBrief.chalkboard.timeCallout}`;
-                                handleCopy(fullChalkText, 'chalkboard');
+                                const fullChalkText = `${editableHeadline}\n\n${campaignBrief.formats.displaySign.bulletPoints.map((b) => `• ${b}`).join('\n')}\n\n${campaignBrief.formats.displaySign.timeCallout}`;
+                                handleCopy(fullChalkText, 'Display Sign Spec');
                               }}
                               className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
                             >
                               <Copy className="w-3.5 h-3.5" />
-                              Copy Chalkboard Spec
+                              Copy Sign Spec
                             </button>
                           </div>
 
                           <div className="p-6 bg-slate-900 text-white rounded-xl shadow-inner font-sans border-4 border-slate-700 max-w-lg mx-auto text-center space-y-4">
                             <input
                               type="text"
-                              value={editableChalkboardHeadline}
-                              onChange={(e) => setEditableChalkboardHeadline(e.target.value)}
+                              value={editableHeadline}
+                              onChange={(e) => setEditableHeadline(e.target.value)}
                               className="bg-transparent border-b border-dashed border-slate-600 text-center font-black tracking-widest text-xl text-yellow-300 w-full focus:outline-none"
                             />
 
                             <div className="space-y-1.5 py-2">
-                              {campaignBrief.chalkboard.bulletPoints.map((point, idx) => (
+                              {campaignBrief.formats.displaySign.bulletPoints.map((point, idx) => (
                                 <p key={idx} className="text-sm font-semibold tracking-wide text-slate-100">
                                   ★ {point}
                                 </p>
@@ -1033,12 +1091,45 @@ export default function GrowthFlowPage() {
                             </div>
 
                             <p className="text-xs text-emerald-400 font-mono tracking-wider">
-                              ⏰ {campaignBrief.chalkboard.timeCallout}
+                              ⏰ {campaignBrief.formats.displaySign.timeCallout}
                             </p>
 
                             <p className="text-xs text-slate-400 italic pt-2 border-t border-slate-800">
-                              Art Tip: {campaignBrief.chalkboard.drawingTip}
+                              Placement Tip: {campaignBrief.formats.displaySign.displayTip}
                             </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* FORMAT 3: DIRECT MESSAGE / OUTREACH */}
+                      {activeFormatTab === 'direct' && (
+                        <div className="space-y-4">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                              Direct Outreach Script (SMS / WhatsApp / Client Message)
+                            </span>
+                            <button
+                              onClick={() => handleCopy(editableDirectMessage, 'Direct Outreach Message')}
+                              className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                              Copy Message
+                            </button>
+                          </div>
+
+                          <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-900 font-medium">
+                            <strong>Subject / Hook:</strong> {campaignBrief.formats.directMessage.hook}
+                          </div>
+
+                          <textarea
+                            value={editableDirectMessage}
+                            onChange={(e) => setEditableDirectMessage(e.target.value)}
+                            rows={5}
+                            className="w-full p-4 border border-slate-300 rounded-lg text-sm text-slate-800 leading-relaxed font-sans focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                          />
+
+                          <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-700">
+                            <strong>Call to Action:</strong> {campaignBrief.formats.directMessage.callToAction}
                           </div>
                         </div>
                       )}
@@ -1051,24 +1142,19 @@ export default function GrowthFlowPage() {
                       <div className="flex items-center gap-2">
                         <Clock className="w-5 h-5 text-emerald-600" />
                         <h3 className="font-bold text-slate-900">
-                          Operational Store Launch Checklist (Relative to {slumpStartTime})
+                          Operational Store & Service Launch Checklist (Relative to {startTime})
                         </h3>
                       </div>
                       <div className="flex items-center gap-2 text-xs">
-                        <span className="text-slate-500">Slump Starts At:</span>
+                        <span className="text-slate-500">Launch Starts At:</span>
                         <input
                           type="time"
-                          value={slumpStartTime}
-                          onChange={(e) => setSlumpStartTime(e.target.value)}
+                          value={startTime}
+                          onChange={(e) => setStartTime(e.target.value)}
                           className="px-2 py-1 border border-slate-300 rounded font-bold text-slate-800"
                         />
                       </div>
                     </div>
-
-                    <p className="text-xs text-slate-500">
-                      Times are automatically calculated relative to your campaign start time. Tasks are editable by
-                      the owner.
-                    </p>
 
                     <div className="space-y-3 pt-1">
                       {checklist.map((task) => (
@@ -1109,7 +1195,7 @@ export default function GrowthFlowPage() {
 
                   {/* Operational Caveats */}
                   <div className="p-4 bg-slate-100 rounded-xl border border-slate-200 text-xs space-y-1 text-slate-700">
-                    <strong className="block text-slate-900 font-bold mb-1">Operational Caveats & Guardrails:</strong>
+                    <strong className="block text-slate-900 font-bold mb-1">Operational Caveats & Constraints:</strong>
                     {campaignBrief.operationalCaveats.map((c, i) => (
                       <p key={i}>• {c}</p>
                     ))}
@@ -1162,7 +1248,7 @@ export default function GrowthFlowPage() {
               <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-3 text-amber-900 text-xs font-medium">
                 <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
                 <span>
-                  <strong>SIMULATED BENCHMARK DATASET:</strong> This view renders 250 simulated café sessions to
+                  <strong>SIMULATED BENCHMARK DATASET:</strong> This view renders 250 simulated small business sessions to
                   demonstrate funnel drop-off curves and cohort variance. It is strictly segregated from your live session.
                 </span>
               </div>
@@ -1221,7 +1307,7 @@ export default function GrowthFlowPage() {
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
               <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                 <h3 className="font-bold text-slate-900">Linear Conversion Funnel</h3>
-                <span className="text-xs text-slate-500">Linear path to activation (Editing is non-linear)</span>
+                <span className="text-xs text-slate-500">Linear path to activation across diverse SMB categories</span>
               </div>
 
               <div className="space-y-4">
