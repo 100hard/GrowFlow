@@ -2,6 +2,11 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateDeterministicBrief } from '../src/lib/generator.ts';
 import type { IntakeScenarioInput } from '../src/lib/types.ts';
+import {
+  CAFE_REGRESSION_FIXTURE,
+  AUTO_DETAILING_FIXTURE,
+  BOOKSTORE_FIXTURE,
+} from '../src/lib/fixtures.ts';
 
 describe('GrowthFlow Generator & Quality Guardrail Tests', () => {
   const baseScenario: IntakeScenarioInput = {
@@ -91,5 +96,67 @@ describe('GrowthFlow Generator & Quality Guardrail Tests', () => {
 
     assert.equal(brief.archetype, 'neighbor_2pack');
     assert.ok(brief.instagram.caption.toLowerCase().includes('coworker') || brief.instagram.caption.toLowerCase().includes('friend'));
+  });
+});
+
+describe('GrowthFlow Multi-Industry Regression Tests (Configuration-Driven)', () => {
+  const fixtures = [CAFE_REGRESSION_FIXTURE, AUTO_DETAILING_FIXTURE, BOOKSTORE_FIXTURE];
+  const forbiddenBuzzwords = ['delve', 'revolutionize', 'elevate', 'testament', 'tapestry', 'unleash', 'bespoke'];
+
+  it('Supports arbitrary business profiles across food, trades, and retail without code branching', () => {
+    for (const fixture of fixtures) {
+      const brief = generateDeterministicBrief(fixture.profile, fixture.objective);
+
+      assert.equal(brief.businessName, fixture.profile.businessName);
+      assert.equal(brief.objectiveType, fixture.objective.type);
+
+      // Verify all 3 formats are fully populated
+      assert.ok(brief.formats.socialPost.headline.length > 5);
+      assert.ok(brief.formats.socialPost.caption.length > 20);
+      assert.ok(brief.formats.displaySign.headline.length > 3);
+      assert.equal(brief.formats.displaySign.bulletPoints.length, 3);
+      assert.ok(brief.formats.directMessage.hook.length > 5);
+      assert.ok(brief.formats.directMessage.callToAction.length > 5);
+
+      // Verify feasibility report is attached
+      assert.ok(brief.feasibilityReport);
+      assert.ok(brief.feasibilityReport.results.length >= 1);
+
+      // Anti-cliche check across all formats
+      const fullCopy = (
+        brief.strategicRationale +
+        ' ' +
+        brief.customerHook +
+        ' ' +
+        brief.formats.socialPost.headline +
+        ' ' +
+        brief.formats.socialPost.caption +
+        ' ' +
+        brief.formats.displaySign.headline +
+        ' ' +
+        brief.formats.directMessage.messageBody
+      ).toLowerCase();
+
+      for (const word of forbiddenBuzzwords) {
+        assert.equal(
+          fullCopy.includes(word),
+          false,
+          `Forbidden buzzword "${word}" found in fixture: ${fixture.id}`
+        );
+      }
+    }
+  });
+
+  it('Evaluates trade service capacity and budget constraints deterministically for auto detailing', () => {
+    const brief = generateDeterministicBrief(AUTO_DETAILING_FIXTURE.profile, AUTO_DETAILING_FIXTURE.objective);
+
+    const capRule = brief.feasibilityReport.results.find((r) => r.ruleId === 'capacity_constraint');
+    assert.ok(capRule);
+    assert.equal(capRule?.status, 'passed'); // 5 redemptions within 6 slots
+    assert.equal(capRule?.details.available, 6);
+
+    const budgetRule = brief.feasibilityReport.results.find((r) => r.ruleId === 'budget_constraint');
+    assert.ok(budgetRule);
+    assert.equal(budgetRule?.status, 'passed'); // exposure $155 <= $200 budget cap
   });
 });
