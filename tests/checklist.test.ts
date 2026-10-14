@@ -35,4 +35,20 @@ describe('GrowthFlow Time-Relative Checklist Unit Tests', () => {
     assert.equal(calculateOffsetTime('00:15', -30), '23:45');
     assert.equal(calculateOffsetTime('12:00', 0), '12:00');
   });
+
+  it('Adapts operational milestones for service-area trade/mobile businesses', () => {
+    const checklist = generateInitialChecklist('09:00', 'service_area', 'promote_bundle');
+
+    assert.equal(checklist.length, 3);
+    assert.equal(checklist[0].offsetMinutes, -60);
+    assert.equal(checklist[0].timeString, '08:00');
+    assert.ok(checklist[0].title.includes('direct outreach'));
+
+    assert.equal(checklist[1].offsetMinutes, -30);
+    assert.equal(checklist[1].timeString, '08:30');
+
+    assert.equal(checklist[2].offsetMinutes, 0);
+    assert.equal(checklist[2].timeString, '09:00');
+    assert.ok(checklist[2].title.includes('equipment'));
+  });
 });
